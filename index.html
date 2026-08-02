@@ -96,6 +96,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
+  var BUILD = '2026-08-02b';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -288,7 +289,8 @@
                      ' あとで（' + soon.length + '）</button>' +
                      (showLater ? '<ul id="laterList">' + soon.map(function (x) { return row(x, true); }).join('') + '</ul>' : '')
                    : '') +
-      '<div style="text-align:center;margin-top:28px"><button class="gear" id="gear">設定</button></div>';
+      '<div style="text-align:center;margin-top:28px"><button class="gear" id="gear">設定</button>' +
+      '<span style="font-size:11px;color:var(--sub);margin-left:12px">' + BUILD + '</span></div>';
 
     var old = document.getElementById('txt');
     var hadFocus = !!old && document.activeElement === old;

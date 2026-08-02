@@ -1,13 +1,21 @@
-/* タスク管理PWA － アプリ本体をキャッシュして即起動させるだけの最小Service Worker。
-   API（script.google.com）へのリクエストには一切触らない。 */
+/* タスク管理PWA － Service Worker
+   方針：
+     - アプリ本体(HTML)は「ネットワーク優先」。繋がっていれば必ず最新が出る。
+       圏外のときだけキャッシュを使う。
+     - アイコン等の変わらないファイルは「キャッシュ優先」で即表示。
+     - API(script.google.com)には一切触らない。
+   ※ 以前はHTMLもキャッシュ優先にしていたため、更新しても常に1つ古い版が表示されていた（2026-08-02に修正）。
+      CACHE名を変えると古いキャッシュは activate 時に破棄される。 */
 
-var CACHE = 'task-app-v1';
-var SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+var CACHE = 'task-app-v2';
+var ASSETS = ['icon-192.png', 'icon-512.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () {
-    return self.skipWaiting();
-  }));
+  e.waitUntil(
+    caches.open(CACHE)
+      .then(function (c) { return c.addAll(ASSETS.concat(['./', 'index.html'])); })
+      .then(function () { return self.skipWaiting(); })
+  );
 });
 
 self.addEventListener('activate', function (e) {
@@ -17,16 +25,39 @@ self.addEventListener('activate', function (e) {
 });
 
 self.addEventListener('fetch', function (e) {
-  var url = new URL(e.request.url);
-  if (e.request.method !== 'GET') return;
+  var req = e.request;
+  if (req.method !== 'GET') return;
+
+  var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;   // APIは素通し
 
-  // キャッシュ優先で即表示し、裏で更新する
-  e.respondWith(caches.match(e.request).then(function (hit) {
-    var net = fetch(e.request).then(function (res) {
+  var isPage = req.mode === 'navigate' ||
+               (req.headers.get('accept') || '').indexOf('text/html') > -1 ||
+               url.pathname.endsWith('/') ||
+               url.pathname.endsWith('index.html');
+
+  if (isPage) {
+    // ネットワーク優先：最新を取りに行き、取れたらキャッシュも更新する
+    e.respondWith(
+      fetch(req).then(function (res) {
+        var copy = res.clone();
+        caches.open(CACHE).then(function (c) { c.put(req, copy); });
+        return res;
+      }).catch(function () {
+        return caches.match(req).then(function (hit) {
+          return hit || caches.match('index.html') || caches.match('./');
+        });
+      })
+    );
+    return;
+  }
+
+  // それ以外はキャッシュ優先＋裏で更新
+  e.respondWith(caches.match(req).then(function (hit) {
+    var net = fetch(req).then(function (res) {
       if (res && res.status === 200) {
         var copy = res.clone();
-        caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+        caches.open(CACHE).then(function (c) { c.put(req, copy); });
       }
       return res;
     }).catch(function () { return hit; });
