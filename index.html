@@ -96,7 +96,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-08-02b';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-08-02c';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -276,7 +276,7 @@
       '<div class="composer">' +
         '<input type="text" id="txt" value="' + esc(draft) + '" placeholder="やること（例：銀行行く 明日）" autocomplete="off" enterkeyhint="done">' +
         '<div class="chips">' +
-          chip('', 'なし') + chip(today(), '今日') + chip(addDays(1), '明日') + chip(addDays(7), '来週') +
+          chip('', 'なし') +
           '<input type="date" id="dpick" value="' + (pickedDate || '') + '">' +
           '<button class="chip add" id="addBtn">追加</button>' +
         '</div>' +
