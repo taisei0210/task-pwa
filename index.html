@@ -101,6 +101,7 @@
   var tasks = load(K_TASKS, []);
   var queue = load(K_QUEUE, []);
   var pickedDate = '';       // 'yyyy-mm-dd' or ''
+  var draft = '';            // 入力途中の文字（描き直しで消えないように保持する）
   var showLater = false;
   var flushTimer = null;
   var undoTimer = null;
@@ -195,7 +196,7 @@
     if (!parsed.name) return;
     var task = { id: newId(), name: parsed.name, date: parsed.date || '' };
     tasks.push(task); save(K_TASKS, tasks);
-    box.value = ''; pickedDate = '';
+    box.value = ''; draft = ''; pickedDate = '';
     enqueue({ action: 'add', id: task.id, name: task.name, date: task.date });
     box.focus();
   }
@@ -272,7 +273,7 @@
       (pending ? '同期待ち ' + pending : '') + '</span></header>' +
 
       '<div class="composer">' +
-        '<input type="text" id="txt" placeholder="やること（例：銀行行く 明日）" autocomplete="off" enterkeyhint="done">' +
+        '<input type="text" id="txt" value="' + esc(draft) + '" placeholder="やること（例：銀行行く 明日）" autocomplete="off" enterkeyhint="done">' +
         '<div class="chips">' +
           chip('', 'なし') + chip(today(), '今日') + chip(addDays(1), '明日') + chip(addDays(7), '来週') +
           '<input type="date" id="dpick" value="' + (pickedDate || '') + '">' +
@@ -289,8 +290,10 @@
                    : '') +
       '<div style="text-align:center;margin-top:28px"><button class="gear" id="gear">設定</button></div>';
 
+    var old = document.getElementById('txt');
+    var hadFocus = !!old && document.activeElement === old;
     app.innerHTML = html;
-    bind();
+    bind(hadFocus);
   }
 
   function chip(val, text) {
@@ -312,14 +315,33 @@
     };
   }
 
-  function bind() {
+  /** 日付の選択状態だけを画面に反映する（描き直さない＝入力中の文字を壊さない） */
+  function syncChips() {
+    Array.prototype.forEach.call(document.querySelectorAll('.chip[data-date]'), function (b) {
+      if (b.getAttribute('data-date') === pickedDate) b.classList.add('on');
+      else b.classList.remove('on');
+    });
+    var dp = document.getElementById('dpick');
+    if (dp && dp.value !== pickedDate) dp.value = pickedDate;
+  }
+
+  function pickDate(v) {
+    pickedDate = v;
+    syncChips();
     var txt = document.getElementById('txt');
+    txt.focus();
+    txt.setSelectionRange(txt.value.length, txt.value.length);
+  }
+
+  function bind(hadFocus) {
+    var txt = document.getElementById('txt');
+    txt.oninput = function () { draft = txt.value; };
     txt.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); addTask(); } };
     document.getElementById('addBtn').onclick = addTask;
-    document.getElementById('dpick').onchange = function (e) { pickedDate = e.target.value; render(); document.getElementById('txt').focus(); };
+    document.getElementById('dpick').onchange = function (e) { pickDate(e.target.value); };
 
     Array.prototype.forEach.call(document.querySelectorAll('.chip[data-date]'), function (b) {
-      b.onclick = function () { pickedDate = b.getAttribute('data-date'); render(); document.getElementById('txt').focus(); };
+      b.onclick = function () { pickDate(b.getAttribute('data-date')); };
     });
 
     Array.prototype.forEach.call(document.querySelectorAll('li'), function (li) {
@@ -341,7 +363,11 @@
       }
     };
 
-    if (matchMedia('(pointer:fine)').matches) txt.focus();
+    // 裏の同期で描き直しても、入力中ならカーソルを末尾に戻して続きを打てるようにする
+    if (hadFocus || matchMedia('(pointer:fine)').matches) {
+      txt.focus();
+      txt.setSelectionRange(txt.value.length, txt.value.length);
+    }
   }
 
   // ---------- 起動 ----------
