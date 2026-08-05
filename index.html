@@ -58,8 +58,17 @@
   }
   .tick:active { background: var(--accent); border-color: var(--accent); }
   .name { flex: 1; font-size: 15px; line-height: 1.4; word-break: break-word; }
-  .when { font-size: 11px; color: var(--sub); white-space: nowrap; }
+  /* 行の日付：タップすると日付を変えられる（透明な date 入力を上に重ねている） */
+  .whenwrap { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; }
+  .whenwrap input.rowdate {
+    position: absolute; left: -8px; right: -4px; top: -12px; bottom: -12px;
+    width: auto; height: auto; opacity: 0; border: 0; padding: 0; margin: 0;
+    background: transparent; cursor: pointer;
+  }
+  .when { font-size: 11px; color: var(--sub); white-space: nowrap;
+    border: 1px dashed transparent; border-radius: 999px; padding: 3px 6px; }
   .when.late { color: var(--late); }
+  .when.nodate { border-color: var(--line); opacity: .75; }
   .del { border: 0; background: transparent; color: var(--sub); font-size: 17px; cursor: pointer; padding: 4px 2px; }
 
   .empty { text-align: center; color: var(--sub); padding: 48px 0; font-size: 14px; }
@@ -96,7 +105,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-08-02c';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-08-02d';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -210,6 +219,19 @@
     offerUndo('完了しました', t, 'done');
   }
 
+  /** 追加後に有効化日時を変える。未送信の add/update があればそれを書き換えて重複送信を避ける */
+  function setDate(id, date) {
+    var t = tasks.filter(function (x) { return x.id === id; })[0];
+    if (!t || t.date === date) return;
+    t.date = date || ''; save(K_TASKS, tasks);
+    for (var i = queue.length - 1; i >= 0; i--) {
+      if (queue[i].id === id && (queue[i].action === 'add' || queue[i].action === 'update')) {
+        queue[i].date = t.date; save(K_QUEUE, queue); scheduleFlush(UNDO_MS); return;  // scheduleFlush が描き直す
+      }
+    }
+    enqueue({ action: 'update', id: id, name: t.name, date: t.date });
+  }
+
   function removeTask(id) {
     var t = tasks.filter(function (x) { return x.id === id; })[0];
     if (!t) return;
@@ -254,10 +276,14 @@
   }
 
   function row(x, dim) {
+    var cls = x.date ? (x.date < today() ? ' late' : '') : ' nodate';
     return '<li data-id="' + x.id + '">' +
       '<button class="tick" data-act="done" aria-label="完了"></button>' +
       '<span class="name"' + (dim ? ' style="opacity:.6"' : '') + '>' + esc(x.name) + '</span>' +
-      (x.date ? '<span class="when' + (x.date < today() ? ' late' : '') + '">' + label(x.date) + '</span>' : '') +
+      '<span class="whenwrap">' +
+        '<span class="when' + cls + '">' + (x.date ? label(x.date) : '日付') + '</span>' +
+        '<input type="date" class="rowdate" value="' + (x.date || '') + '" aria-label="有効化日時を変える">' +
+      '</span>' +
       '<button class="del" data-act="del" aria-label="削除">×</button></li>';
   }
 
@@ -354,6 +380,12 @@
       li.querySelector('[data-act=del]').onclick = function () {
         li.classList.add('going'); setTimeout(function () { removeTask(id); render(); }, 160);
       };
+      var dp = li.querySelector('.rowdate');
+      if (dp) {
+        dp.onchange = function () { setDate(id, dp.value); };
+        // PCのChromeは入力欄を押しただけではカレンダーが開かないので明示的に開く
+        dp.onclick = function () { if (dp.showPicker) { try { dp.showPicker(); } catch (e) {} } };
+      }
     });
 
     var lb = document.getElementById('laterBtn');
