@@ -44,6 +44,9 @@
   .chip.add:disabled { opacity: .35; }
   input[type=date] { border: 1px solid var(--line); background: transparent; color: var(--fg);
     border-radius: 999px; padding: 5px 10px; font-size: 13px; }
+  .chip.tsel { -webkit-appearance: none; appearance: none; text-align: center; }
+  .chip.tsel:disabled { opacity: .35; }
+  .chip.tsel option { color: var(--fg); background: var(--card); }
 
   ul { list-style: none; margin: 0; padding: 0; }
   li {
@@ -60,10 +63,10 @@
   .name { flex: 1; font-size: 15px; line-height: 1.4; word-break: break-word; }
   /* 行の日付：タップすると日付を変えられる（透明な date 入力を上に重ねている） */
   .whenwrap { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; }
-  .whenwrap input.rowdate {
-    position: absolute; left: -8px; right: -4px; top: -12px; bottom: -12px;
+  .whenwrap input.rowdate, .whenwrap select.rowtime {
+    position: absolute; left: -6px; right: -4px; top: -12px; bottom: -12px;
     width: auto; height: auto; opacity: 0; border: 0; padding: 0; margin: 0;
-    background: transparent; cursor: pointer;
+    background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none;
   }
   .when { font-size: 11px; color: var(--sub); white-space: nowrap;
     border: 1px dashed transparent; border-radius: 999px; padding: 3px 6px; }
@@ -105,12 +108,13 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-08-02d';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-08-06a';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
   var queue = load(K_QUEUE, []);
   var pickedDate = '';       // 'yyyy-mm-dd' or ''
+  var pickedTime = '';       // 'HH:00' or ''（日付を選んだときだけ意味を持つ）
   var draft = '';            // 入力途中の文字（描き直しで消えないように保持する）
   var showLater = false;
   var flushTimer = null;
@@ -150,14 +154,31 @@
     return { name: t, date: '' };
   }
 
+  /** 有効化の瞬間を比較用の文字列にする（'yyyy-mm-dd HH:00'）。時刻なしは0時＝その日の始まり */
+  function stampOf(x) { return x.date ? x.date + ' ' + (x.time || '00:00') : ''; }
+  function stampNow() { var d = new Date(); return ymd(d) + ' ' + pad(d.getHours()) + ':00'; }
+  /** 表示してよいか：日付なし、または有効化の瞬間を過ぎている */
+  function isActive(x) { return !x.date || stampOf(x) <= stampNow(); }
+  function isLate(x) { return !!x.date && stampOf(x) < stampNow(); }
+
   function label(date) {
     if (!date) return '';
     var t = today();
     if (date === t) return '今日';
     if (date === addDays(1)) return '明日';
     var p = date.split('-');
-    var s = Number(p[1]) + '/' + Number(p[2]);
-    return date < t ? s + ' から' : s;
+    return Number(p[1]) + '/' + Number(p[2]);
+  }
+  function timeLabel(time) { return time ? Number(time.slice(0, 2)) + '時' : ''; }
+
+  /** 1時間ごとの選択肢 */
+  function hourOptions(sel) {
+    var s = '<option value=""' + (sel ? '' : ' selected') + '>時刻なし</option>';
+    for (var h = 0; h < 24; h++) {
+      var v = pad(h) + ':00';
+      s += '<option value="' + v + '"' + (sel === v ? ' selected' : '') + '>' + h + '時</option>';
+    }
+    return s;
   }
 
   // ---------- 同期 ----------
@@ -204,10 +225,11 @@
     if (!raw) return;
     var parsed = pickedDate ? { name: raw, date: pickedDate } : parseTail(raw);
     if (!parsed.name) return;
-    var task = { id: newId(), name: parsed.name, date: parsed.date || '' };
+    var task = { id: newId(), name: parsed.name, date: parsed.date || '',
+                 time: (pickedDate && parsed.date) ? pickedTime : '' };
     tasks.push(task); save(K_TASKS, tasks);
-    box.value = ''; draft = ''; pickedDate = '';
-    enqueue({ action: 'add', id: task.id, name: task.name, date: task.date });
+    box.value = ''; draft = ''; pickedDate = ''; pickedTime = '';
+    enqueue({ action: 'add', id: task.id, name: task.name, date: task.date, time: task.time });
     box.focus();
   }
 
@@ -220,16 +242,27 @@
   }
 
   /** 追加後に有効化日時を変える。未送信の add/update があればそれを書き換えて重複送信を避ける */
-  function setDate(id, date) {
+  function patch(id, fields) {
     var t = tasks.filter(function (x) { return x.id === id; })[0];
-    if (!t || t.date === date) return;
-    t.date = date || ''; save(K_TASKS, tasks);
+    if (!t) return;
+    var changed = false;
+    if ('date' in fields && t.date !== (fields.date || '')) {
+      t.date = fields.date || '';
+      if (!t.date) t.time = '';          // 日付がなければ時刻は意味を持たない
+      changed = true;
+    }
+    if ('time' in fields && t.date && t.time !== (fields.time || '')) {
+      t.time = fields.time || ''; changed = true;
+    }
+    if (!changed) return;
+    save(K_TASKS, tasks);
     for (var i = queue.length - 1; i >= 0; i--) {
       if (queue[i].id === id && (queue[i].action === 'add' || queue[i].action === 'update')) {
-        queue[i].date = t.date; save(K_QUEUE, queue); scheduleFlush(UNDO_MS); return;  // scheduleFlush が描き直す
+        queue[i].date = t.date; queue[i].time = t.time;
+        save(K_QUEUE, queue); scheduleFlush(UNDO_MS); return;   // scheduleFlush が描き直す
       }
     }
-    enqueue({ action: 'update', id: id, name: t.name, date: t.date });
+    enqueue({ action: 'update', id: id, name: t.name, date: t.date, time: t.time });
   }
 
   function removeTask(id) {
@@ -261,29 +294,34 @@
 
   // ---------- 描画 ----------
   function visible() {
-    var t = today();
-    return tasks.filter(function (x) { return !x.date || x.date <= t; }).sort(function (a, b) {
+    return tasks.filter(isActive).sort(function (a, b) {
       if (!a.date && !b.date) return 0;
       if (!a.date) return 1;          // 日付なしは末尾
       if (!b.date) return -1;
-      return a.date < b.date ? -1 : 1; // 古い順＝放置が上
+      return stampOf(a) < stampOf(b) ? -1 : 1; // 古い順＝放置が上
     });
   }
   function later() {
-    var t = today();
-    return tasks.filter(function (x) { return x.date && x.date > t; })
-                .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    return tasks.filter(function (x) { return !isActive(x); })
+                .sort(function (a, b) { return stampOf(a) < stampOf(b) ? -1 : 1; });
   }
 
   function row(x, dim) {
-    var cls = x.date ? (x.date < today() ? ' late' : '') : ' nodate';
+    var late = isLate(x);
+    var dcls = x.date ? (late ? ' late' : '') : ' nodate';
     return '<li data-id="' + x.id + '">' +
       '<button class="tick" data-act="done" aria-label="完了"></button>' +
       '<span class="name"' + (dim ? ' style="opacity:.6"' : '') + '>' + esc(x.name) + '</span>' +
       '<span class="whenwrap">' +
-        '<span class="when' + cls + '">' + (x.date ? label(x.date) : '日付') + '</span>' +
-        '<input type="date" class="rowdate" value="' + (x.date || '') + '" aria-label="有効化日時を変える">' +
+        '<span class="when' + dcls + '">' + (x.date ? label(x.date) + (late ? ' から' : '') : '日付') + '</span>' +
+        '<input type="date" class="rowdate" value="' + (x.date || '') + '" aria-label="有効化日を変える">' +
       '</span>' +
+      // 時刻は日付があるときだけ意味を持つので、日付なしの行には出さない
+      (x.date ? '<span class="whenwrap">' +
+        '<span class="when' + (late ? ' late' : '') + (x.time ? '' : ' nodate') + '">' +
+          (x.time ? timeLabel(x.time) : '時刻') + '</span>' +
+        '<select class="rowtime" aria-label="有効化時刻を変える">' + hourOptions(x.time || '') + '</select>' +
+      '</span>' : '') +
       '<button class="del" data-act="del" aria-label="削除">×</button></li>';
   }
 
@@ -304,6 +342,8 @@
         '<div class="chips">' +
           chip('', 'なし') +
           '<input type="date" id="dpick" value="' + (pickedDate || '') + '">' +
+          '<select class="chip tsel" id="tpick"' + (pickedDate ? '' : ' disabled') + '>' +
+            hourOptions(pickedTime) + '</select>' +
           '<button class="chip add" id="addBtn">追加</button>' +
         '</div>' +
       '</div>' +
@@ -343,7 +383,7 @@
     };
   }
 
-  /** 日付の選択状態だけを画面に反映する（描き直さない＝入力中の文字を壊さない） */
+  /** 日付・時刻の選択状態だけを画面に反映する（描き直さない＝入力中の文字を壊さない） */
   function syncChips() {
     Array.prototype.forEach.call(document.querySelectorAll('.chip[data-date]'), function (b) {
       if (b.getAttribute('data-date') === pickedDate) b.classList.add('on');
@@ -351,10 +391,17 @@
     });
     var dp = document.getElementById('dpick');
     if (dp && dp.value !== pickedDate) dp.value = pickedDate;
+    var tp = document.getElementById('tpick');
+    if (tp) {
+      tp.disabled = !pickedDate;      // 時刻は日付とセットでしか意味がない
+      if (tp.value !== pickedTime) tp.value = pickedTime;
+      tp.classList.toggle('on', !!pickedTime);
+    }
   }
 
   function pickDate(v) {
     pickedDate = v;
+    if (!v) pickedTime = '';
     syncChips();
     var txt = document.getElementById('txt');
     txt.focus();
@@ -367,6 +414,7 @@
     txt.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); addTask(); } };
     document.getElementById('addBtn').onclick = addTask;
     document.getElementById('dpick').onchange = function (e) { pickDate(e.target.value); };
+    document.getElementById('tpick').onchange = function (e) { pickedTime = e.target.value; syncChips(); };
 
     Array.prototype.forEach.call(document.querySelectorAll('.chip[data-date]'), function (b) {
       b.onclick = function () { pickDate(b.getAttribute('data-date')); };
@@ -382,10 +430,12 @@
       };
       var dp = li.querySelector('.rowdate');
       if (dp) {
-        dp.onchange = function () { setDate(id, dp.value); };
+        dp.onchange = function () { patch(id, { date: dp.value }); };
         // PCのChromeは入力欄を押しただけではカレンダーが開かないので明示的に開く
         dp.onclick = function () { if (dp.showPicker) { try { dp.showPicker(); } catch (e) {} } };
       }
+      var tp = li.querySelector('.rowtime');
+      if (tp) tp.onchange = function () { patch(id, { time: tp.value }); };
     });
 
     var lb = document.getElementById('laterBtn');
@@ -409,6 +459,13 @@
   render();
   pull();
   if (queue.length) scheduleFlush(500);
+
+  // 時間が進んだら（＝時が変わったら）出番の来たタスクを自動で出す
+  var lastStamp = stampNow();
+  setInterval(function () {
+    var s = stampNow();
+    if (s !== lastStamp) { lastStamp = s; render(); }
+  }, 20000);
 
   window.addEventListener('online', function () { scheduleFlush(200); });
   document.addEventListener('visibilitychange', function () {
