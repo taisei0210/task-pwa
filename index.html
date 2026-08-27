@@ -60,7 +60,13 @@
     border: 2px solid var(--sub); background: transparent; cursor: pointer;
   }
   .tick:active { background: var(--accent); border-color: var(--accent); }
-  .name { flex: 1; font-size: 15px; line-height: 1.4; word-break: break-word; }
+  .name { flex: 1; font-size: 15px; line-height: 1.4; word-break: break-word; cursor: text; }
+  /* 名前をタップすると、その場で入力欄に変わる（あとから名前を変えられる） */
+  .nameedit {
+    flex: 1; min-width: 0; font-size: 15px; line-height: 1.4; font-family: inherit;
+    color: var(--fg); background: transparent; padding: 2px 6px;
+    border: 0; border-bottom: 1.5px solid var(--accent); border-radius: 0; outline: none;
+  }
   /* 行の日付：タップすると日付を変えられる（透明な date 入力を上に重ねている） */
   .whenwrap { position: relative; display: inline-flex; align-items: center; flex: 0 0 auto; }
   .whenwrap input.rowdate, .whenwrap select.rowtime {
@@ -108,7 +114,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-08-06a';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-08-27a';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -116,6 +122,8 @@
   var pickedDate = '';       // 'yyyy-mm-dd' or ''
   var pickedTime = '';       // 'HH:00' or ''（日付を選んだときだけ意味を持つ）
   var draft = '';            // 入力途中の文字（描き直しで消えないように保持する）
+  var editingId = null;      // 名前を編集中の行のID（描き直しても編集状態を保つ）
+  var editDraft = '';        // 編集中の名前
   var showLater = false;
   var flushTimer = null;
   var undoTimer = null;
@@ -246,6 +254,10 @@
     var t = tasks.filter(function (x) { return x.id === id; })[0];
     if (!t) return;
     var changed = false;
+    if ('name' in fields) {
+      var nm = String(fields.name || '').trim();
+      if (nm && nm !== t.name) { t.name = nm; changed = true; }
+    }
     if ('date' in fields && t.date !== (fields.date || '')) {
       t.date = fields.date || '';
       if (!t.date) t.time = '';          // 日付がなければ時刻は意味を持たない
@@ -258,12 +270,27 @@
     save(K_TASKS, tasks);
     for (var i = queue.length - 1; i >= 0; i--) {
       if (queue[i].id === id && (queue[i].action === 'add' || queue[i].action === 'update')) {
-        queue[i].date = t.date; queue[i].time = t.time;
+        queue[i].name = t.name; queue[i].date = t.date; queue[i].time = t.time;
         save(K_QUEUE, queue); scheduleFlush(UNDO_MS); return;   // scheduleFlush が描き直す
       }
     }
     enqueue({ action: 'update', id: id, name: t.name, date: t.date, time: t.time });
   }
+
+  /** 名前の編集を始める／確定する／やめる */
+  function startEdit(id) {
+    var t = tasks.filter(function (x) { return x.id === id; })[0];
+    if (!t) return;
+    editingId = id; editDraft = t.name; render();
+  }
+  function commitEdit() {
+    if (!editingId) return;
+    var id = editingId, name = editDraft;
+    editingId = null; editDraft = '';
+    patch(id, { name: name });   // 中身が同じ／空なら patch が握りつぶす
+    render();
+  }
+  function cancelEdit() { editingId = null; editDraft = ''; render(); }
 
   function removeTask(id) {
     var t = tasks.filter(function (x) { return x.id === id; })[0];
@@ -311,7 +338,9 @@
     var dcls = x.date ? (late ? ' late' : '') : ' nodate';
     return '<li data-id="' + x.id + '">' +
       '<button class="tick" data-act="done" aria-label="完了"></button>' +
-      '<span class="name"' + (dim ? ' style="opacity:.6"' : '') + '>' + esc(x.name) + '</span>' +
+      (editingId === x.id
+        ? '<input type="text" class="nameedit" value="' + esc(editDraft) + '" aria-label="タスク名を変える" enterkeyhint="done">'
+        : '<span class="name" data-act="rename"' + (dim ? ' style="opacity:.6"' : '') + '>' + esc(x.name) + '</span>') +
       '<span class="whenwrap">' +
         '<span class="when' + dcls + '">' + (x.date ? label(x.date) + (late ? ' から' : '') : '日付') + '</span>' +
         '<input type="date" class="rowdate" value="' + (x.date || '') + '" aria-label="有効化日を変える">' +
@@ -422,6 +451,18 @@
 
     Array.prototype.forEach.call(document.querySelectorAll('li'), function (li) {
       var id = li.getAttribute('data-id');
+      var nm = li.querySelector('[data-act=rename]');
+      if (nm) nm.onclick = function () { commitEdit(); startEdit(id); };
+      var ne = li.querySelector('.nameedit');
+      if (ne) {
+        ne.oninput = function () { editDraft = ne.value; };
+        ne.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+        };
+        // 他の場所を触ったら確定。ただし描き直しで消えただけのときは何もしない
+        ne.onblur = function () { if (document.contains(ne)) commitEdit(); };
+      }
       li.querySelector('[data-act=done]').onclick = function () {
         li.classList.add('going'); setTimeout(function () { doneTask(id); render(); }, 160);
       };
@@ -448,7 +489,11 @@
     };
 
     // 裏の同期で描き直しても、入力中ならカーソルを末尾に戻して続きを打てるようにする
-    if (hadFocus || matchMedia('(pointer:fine)').matches) {
+    var editing = document.querySelector('.nameedit');
+    if (editing) {
+      editing.focus();
+      editing.setSelectionRange(editing.value.length, editing.value.length);
+    } else if (hadFocus || matchMedia('(pointer:fine)').matches) {
       txt.focus();
       txt.setSelectionRange(txt.value.length, txt.value.length);
     }
