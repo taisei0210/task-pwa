@@ -114,7 +114,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-08-27a';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-09-22a';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -124,6 +124,7 @@
   var draft = '';            // 入力途中の文字（描き直しで消えないように保持する）
   var editingId = null;      // 名前を編集中の行のID（描き直しても編集状態を保つ）
   var editDraft = '';        // 編集中の名前
+  var rendering = false;     // 描き直し中。Chromeは消える直前の入力欄に blur を出すので、それを「確定」と誤認しないため
   var showLater = false;
   var flushTimer = null;
   var undoTimer = null;
@@ -389,7 +390,8 @@
 
     var old = document.getElementById('txt');
     var hadFocus = !!old && document.activeElement === old;
-    app.innerHTML = html;
+    rendering = true;
+    try { app.innerHTML = html; } finally { rendering = false; }
     bind(hadFocus);
   }
 
@@ -457,11 +459,13 @@
       if (ne) {
         ne.oninput = function () { editDraft = ne.value; };
         ne.onkeydown = function (e) {
+          if (e.isComposing || e.keyCode === 229) return;   // 日本語変換の確定Enterでは確定しない
           if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
           else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
         };
         // 他の場所を触ったら確定。ただし描き直しで消えただけのときは何もしない
-        ne.onblur = function () { if (document.contains(ne)) commitEdit(); };
+        // （Chromeは要素を消す「直前」に blur を出すので document.contains では見分けられない）
+        ne.onblur = function () { if (!rendering && document.contains(ne)) commitEdit(); };
       }
       li.querySelector('[data-act=done]').onclick = function () {
         li.classList.add('going'); setTimeout(function () { doneTask(id); render(); }, 160);
