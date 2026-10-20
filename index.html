@@ -114,7 +114,7 @@
 
   var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
   var UNDO_MS = 4000;
-  var BUILD = '2026-09-22a';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-10-20a';   // 画面下に出る。どの版が動いているかの確認用
 
   var api = localStorage.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
@@ -129,6 +129,8 @@
   var flushTimer = null;
   var undoTimer = null;
   var pendingUndo = null;
+  var localRev = 0;          // 端末側で変更するたびに増やす。取得中に変更があったら、その取得結果は古いので捨てる
+  var inflight = null;       // 送信中の操作。送信済みの中身を書き換えても届かないので、patch は触らない
 
   // ---------- utils ----------
   function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } }
@@ -191,7 +193,7 @@
   }
 
   // ---------- 同期 ----------
-  function enqueue(op) { queue.push(op); save(K_QUEUE, queue); scheduleFlush(UNDO_MS); }
+  function enqueue(op) { localRev++; queue.push(op); save(K_QUEUE, queue); scheduleFlush(UNDO_MS); }
 
   function scheduleFlush(ms) {
     clearTimeout(flushTimer);
@@ -201,13 +203,16 @@
 
   function flush() {
     if (!api || !queue.length || !navigator.onLine) { render(); return; }
-    var op = queue[0];
+    if (inflight) return;                 // 二重送信しない（終わったら続きを送る）
+    var op = inflight = queue[0];
     post(op).then(function (res) {
+      inflight = null;
       if (res && res.ok) {
-        queue.shift(); save(K_QUEUE, queue);
+        var i = queue.indexOf(op);
+        if (i >= 0) { queue.splice(i, 1); save(K_QUEUE, queue); }
         if (queue.length) flush(); else { render(); pull(); }
       } else { scheduleFlush(15000); }
-    }).catch(function () { scheduleFlush(15000); });
+    }).catch(function () { inflight = null; scheduleFlush(15000); });
   }
 
   function post(body) {
@@ -221,8 +226,12 @@
 
   function pull() {
     if (!api || queue.length || !navigator.onLine) return;
+    var rev = localRev;
     fetch(api, { redirect: 'follow' }).then(function (r) { return r.json(); })
       .then(function (res) {
+        // 取得中に追加・修正・完了した分はサーバーにまだ無い。上書きすると一瞬消えるので捨てる
+        // （その変更の送信が終わったら、もう一度取りに行く）
+        if (rev !== localRev || queue.length) return;
         if (res && res.ok) { tasks = res.tasks; save(K_TASKS, tasks); render(); }
       }).catch(function () {});
   }
@@ -268,8 +277,9 @@
       t.time = fields.time || ''; changed = true;
     }
     if (!changed) return;
-    save(K_TASKS, tasks);
+    save(K_TASKS, tasks); localRev++;
     for (var i = queue.length - 1; i >= 0; i--) {
+      if (queue[i] === inflight) break;   // 送信中のものは書き換えても届かない → 新しく update を積む
       if (queue[i].id === id && (queue[i].action === 'add' || queue[i].action === 'update')) {
         queue[i].name = t.name; queue[i].date = t.date; queue[i].time = t.time;
         save(K_QUEUE, queue); scheduleFlush(UNDO_MS); return;   // scheduleFlush が描き直す
@@ -314,8 +324,8 @@
     if (!pendingUndo) return;
     var t = pendingUndo.task;
     // まだ送信前ならキューから取り消すだけで済む
-    queue = queue.filter(function (op) { return op.id !== t.id; });
-    save(K_QUEUE, queue);
+    queue = queue.filter(function (op) { return op.id !== t.id || op === inflight; });
+    save(K_QUEUE, queue); localRev++;
     tasks.push(t); save(K_TASKS, tasks);
     hideUndo(); render();
   }
