@@ -118,16 +118,29 @@
 (function () {
   'use strict';
 
-  var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue';
+  var K_API = 'tm.api', K_TASKS = 'tm.tasks', K_QUEUE = 'tm.queue', K_DRAFT = 'tm.draft';
   var UNDO_MS = 4000;
-  var BUILD = '2026-10-20a';   // 画面下に出る。どの版が動いているかの確認用
+  var BUILD = '2026-11-11a';   // 画面下に出る。どの版が動いているかの確認用
 
-  var api = localStorage.getItem(K_API) || '';
+  // localStorage が使えない環境（Obsidian Hearth の既定sandbox等）でも落とさない。使えなければメモリだけで動く
+  var store = (function () {
+    try { localStorage.setItem('tm.probe', '1'); localStorage.removeItem('tm.probe'); return localStorage; }
+    catch (e) {
+      var mem = {};
+      return {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+        setItem: function (k, v) { mem[k] = String(v); },
+        removeItem: function (k) { delete mem[k]; }
+      };
+    }
+  })();
+
+  var api = store.getItem(K_API) || '';
   var tasks = load(K_TASKS, []);
   var queue = load(K_QUEUE, []);
   var pickedDate = '';       // 'yyyy-mm-dd' or ''
   var pickedTime = '';       // 'HH:00' or ''（日付を選んだときだけ意味を持つ）
-  var draft = '';            // 入力途中の文字（描き直しで消えないように保持する）
+  var draft = store.getItem(K_DRAFT) || '';            // 入力途中の文字（描き直しで消えないように保持する）
   var editingId = null;      // 名前を編集中の行のID（描き直しても編集状態を保つ）
   var editDraft = '';        // 編集中の名前
   var rendering = false;     // 描き直し中。Chromeは消える直前の入力欄に blur を出すので、それを「確定」と誤認しないため
@@ -139,8 +152,8 @@
   var inflight = null;       // 送信中の操作。送信済みの中身を書き換えても届かないので、patch は触らない
 
   // ---------- utils ----------
-  function load(k, d) { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } }
-  function save(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+  function load(k, d) { try { return JSON.parse(store.getItem(k)) || d; } catch (e) { return d; } }
+  function save(k, v) { try { store.setItem(k, JSON.stringify(v)); } catch (e) {} }
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
@@ -238,7 +251,12 @@
         // 取得中に追加・修正・完了した分はサーバーにまだ無い。上書きすると一瞬消えるので捨てる
         // （その変更の送信が終わったら、もう一度取りに行く）
         if (rev !== localRev || queue.length) return;
-        if (res && res.ok) { tasks = res.tasks; save(K_TASKS, tasks); render(); }
+        if (res && res.ok) {
+          // 中身が変わっていなければ描き直さない（無駄な再描画＝チカチカを避ける）
+          var changed = JSON.stringify(res.tasks) !== JSON.stringify(tasks);
+          tasks = res.tasks; save(K_TASKS, tasks);
+          if (changed) render();
+        }
       }).catch(function () {});
   }
 
@@ -252,7 +270,7 @@
     var task = { id: newId(), name: parsed.name, date: parsed.date || '',
                  time: (pickedDate && parsed.date) ? pickedTime : '' };
     tasks.push(task); save(K_TASKS, tasks);
-    box.value = ''; draft = ''; pickedDate = ''; pickedTime = '';
+    box.value = ''; draft = ''; try { store.removeItem(K_DRAFT); } catch (e) {} pickedDate = ''; pickedTime = '';
     enqueue({ action: 'add', id: task.id, name: task.name, date: task.date, time: task.time });
     box.focus();
   }
@@ -426,7 +444,7 @@
     document.getElementById('saveApi').onclick = function () {
       var v = document.getElementById('apiIn').value.trim();
       if (!v) return;
-      api = v; localStorage.setItem(K_API, v); render(); pull();
+      api = v; store.setItem(K_API, v); render(); pull();
     };
   }
 
@@ -457,7 +475,7 @@
 
   function bind(hadFocus) {
     var txt = document.getElementById('txt');
-    txt.oninput = function () { draft = txt.value; };
+    txt.oninput = function () { draft = txt.value; try { store.setItem(K_DRAFT, draft); } catch (e) {} };
     txt.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); addTask(); } };
     document.getElementById('addBtn').onclick = addTask;
     document.getElementById('dpick').onchange = function (e) { pickDate(e.target.value); };
@@ -504,7 +522,7 @@
 
     document.getElementById('gear').onclick = function () {
       if (confirm('接続先URLを再設定しますか？（タスクは消えません）')) {
-        localStorage.removeItem(K_API); api = ''; render();
+        store.removeItem(K_API); api = ''; render();
       }
     };
 
@@ -538,7 +556,7 @@
     else { pull(); }
   });
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
+  try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) {}   // sandbox内では例外になるので握りつぶす
 })();
 </script>
 </body>
